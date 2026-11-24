@@ -85,6 +85,18 @@ jobs:
           git clone --depth 1 "https://oauth2:${FORGE_TOKEN}@code.yumedevs.com/Alejandro/${APP}.git" "$CLONE_DIR"
           echo "APP_DIR=$CLONE_DIR" >> "$GITHUB_ENV"
 
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ matrix.app }}-${{ hashFiles(format('{0}/Cargo.lock', runner.temp)) }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.app }}-
+            ${{ runner.os }}-cargo-
+
       - name: Build and Package macOS Bundle (.app and .dmg)
         env:
           APP: ${{ matrix.app }}
