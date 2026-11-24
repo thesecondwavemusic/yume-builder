@@ -147,12 +147,13 @@ jobs:
           app_dir = os.environ["APP_DIR"]
           dist_dir = os.path.join(app_dir, "dist", "release")
 
-          # 1. Fetch release details from Gitea REST API
+          # 1. Fetch release details from Gitea REST API via curl
           rel_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/tags/{tag}"
-          req = urllib.request.Request(rel_url, headers={"Authorization": f"token {token}", "Accept": "application/json"})
           try:
-              with urllib.request.urlopen(req) as resp:
-                  rel_data = json.loads(resp.read().decode())
+              out = subprocess.check_output([
+                  "curl", "-s", "-f", "-H", f"Authorization: token {token}", rel_url
+              ])
+              rel_data = json.loads(out.decode())
           except Exception as e:
               print(f"Error fetching release {tag}: {e}", file=sys.stderr)
               sys.exit(1)
@@ -166,8 +167,10 @@ jobs:
           if "SHA256SUMS.txt" in existing_assets:
               try:
                   sums_url = f"https://code.yumedevs.com/Alejandro/{app}/releases/download/{tag}/SHA256SUMS.txt"
-                  with urllib.request.urlopen(sums_url) as sresp:
-                      existing_sums = sresp.read().decode("utf-8", errors="ignore")
+                  out_sums = subprocess.check_output([
+                      "curl", "-s", "-H", f"Authorization: token {token}", sums_url
+                  ])
+                  existing_sums = out_sums.decode("utf-8", errors="ignore")
               except Exception as e:
                   print("Could not fetch remote SHA256SUMS.txt:", e)
 
