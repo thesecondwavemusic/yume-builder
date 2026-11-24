@@ -66,14 +66,6 @@ jobs:
             rustup target add x86_64-apple-darwin
           fi
 
-      - name: Install Gitea CLI (tea)
-        run: |
-          echo "==> Installing tea CLI for macOS..."
-          curl -sL "https://gitea.com/gitea/tea/releases/download/v0.9.2/tea-0.9.2-darwin-arm64" -o /usr/local/bin/tea
-          chmod +x /usr/local/bin/tea
-          tea --version
-          tea login add --name yumedevs --url https://code.yumedevs.com --token "${{ secrets.FORGE_TOKEN }}"
-
       - name: Clone from Private Forge (Ephemeral Storage)
         env:
           FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
@@ -140,31 +132,52 @@ jobs:
           APP: ${{ matrix.app }}
           ARCH: ${{ inputs.arch }}
           TAG_INPUT: ${{ inputs.tag }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
         run: |
           cd "$APP_DIR"
           TAG="${TAG_INPUT:-v$VERSION}"
-          echo "==> Publishing assets for $APP tag $TAG"
-          
-          DIST="$APP_DIR/dist/release"
-          EXISTING_SUMS=$(curl -s "https://code.yumedevs.com/Alejandro/${APP}/releases/download/${TAG}/SHA256SUMS.txt" 2>/dev/null || true)
-          export EXISTING_SUMS
-          export APP_DIR
+          echo "==> Publishing assets for $APP tag $TAG via Gitea REST API"
           
           python3 - << 'EOF'
-          import os
-          import hashlib
+          import os, sys, json, urllib.request, hashlib, subprocess
 
-          dist_dir = os.path.join(os.environ["APP_DIR"], "dist", "release")
-          existing_sums = os.environ.get("EXISTING_SUMS", "")
-          
+          token = os.environ["FORGE_TOKEN"]
+          app = os.environ["APP"]
+          tag = os.environ.get("TAG_INPUT") or f"v{os.environ['VERSION']}"
+          app_dir = os.environ["APP_DIR"]
+          dist_dir = os.path.join(app_dir, "dist", "release")
+
+          # 1. Fetch release details from Gitea REST API
+          rel_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/tags/{tag}"
+          req = urllib.request.Request(rel_url, headers={"Authorization": f"token {token}", "Accept": "application/json"})
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  rel_data = json.loads(resp.read().decode())
+          except Exception as e:
+              print(f"Error fetching release {tag}: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          rel_id = rel_data["id"]
+          existing_assets = {a["name"]: a["id"] for a in rel_data.get("assets", [])}
+          print(f"Found release {tag} (ID {rel_id}) with {len(existing_assets)} existing assets.")
+
+          # 2. Merge existing SHA256SUMS.txt with newly built artifacts
+          existing_sums = ""
+          if "SHA256SUMS.txt" in existing_assets:
+              try:
+                  sums_url = f"https://code.yumedevs.com/Alejandro/{app}/releases/download/{tag}/SHA256SUMS.txt"
+                  with urllib.request.urlopen(sums_url) as sresp:
+                      existing_sums = sresp.read().decode("utf-8", errors="ignore")
+              except Exception as e:
+                  print("Could not fetch remote SHA256SUMS.txt:", e)
+
           all_sums = {}
           for line in existing_sums.splitlines():
               parts = line.strip().split(None, 1)
               if len(parts) == 2 and len(parts[0]) == 64:
-                  clean_name = parts[1].lstrip("*")
-                  all_sums[clean_name] = parts[0]
-                  
-          for f in os.listdir(dist_dir):
+                  all_sums[parts[1].lstrip("*")] = parts[0]
+
+          for f in sorted(os.listdir(dist_dir)):
               if f.endswith(".dmg") or f.endswith(".zip"):
                   p = os.path.join(dist_dir, f)
                   h = hashlib.sha256()
@@ -172,30 +185,37 @@ jobs:
                       while chunk := bf.read(65536):
                           h.update(chunk)
                   all_sums[f] = h.hexdigest()
-                  
+
           sums_path = os.path.join(dist_dir, "SHA256SUMS.txt")
           with open(sums_path, "wb") as sf:
               for fname in sorted(all_sums.keys()):
                   sf.write(f"{all_sums[fname]}  {fname}\n".encode("ascii"))
-          print(f"Generated clean SHA256SUMS.txt with {len(all_sums)} checksums.")
+
+          print("Generated clean SHA256SUMS.txt:")
+          with open(sums_path, "r") as sf:
+              print(sf.read())
+
+          # 3. Upload built assets and updated SHA256SUMS.txt
+          files_to_upload = sorted([f for f in os.listdir(dist_dir) if f.endswith(".dmg") or f == "SHA256SUMS.txt"])
+          
+          for f in files_to_upload:
+              fpath = os.path.join(dist_dir, f)
+              if f in existing_assets:
+                  aid = existing_assets[f]
+                  print(f"[-] Deleting existing asset {f} (ID {aid})...")
+                  del_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/{rel_id}/assets/{aid}"
+                  subprocess.run(["curl", "-s", "-X", "DELETE", "-H", f"Authorization: token {token}", del_url], check=True)
+
+              print(f"[+] Uploading {f}...")
+              up_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/{rel_id}/assets"
+              res = subprocess.run(
+                  ["curl", "-s", "-f", "-X", "POST", "-H", f"Authorization: token {token}", "-F", f"attachment=@{fpath}", up_url],
+                  capture_output=True, text=True
+              )
+              if res.returncode != 0:
+                  print(f"Error uploading {f}: {res.stderr}", file=sys.stderr)
+                  sys.exit(1)
+              print(f"[✓] Successfully uploaded {f}!")
+
+          print("[✓] All release assets successfully published to Gitea!")
           EOF
-          
-          cat "$DIST/SHA256SUMS.txt"
-          
-          # Upload via tea CLI
-          cd "$DIST"
-          for f in *.dmg; do
-            if [[ -f "$f" ]]; then
-              echo "[-] Removing existing $f from release if present..."
-              tea releases assets delete --login yumedevs --repo "Alejandro/$APP" "$TAG" "$f" 2>/dev/null || true
-              echo "[+] Uploading $f..."
-              tea releases assets create --login yumedevs --repo "Alejandro/$APP" "$TAG" "$f"
-            fi
-          done
-          
-          echo "[-] Replacing SHA256SUMS.txt..."
-          tea releases assets delete --login yumedevs --repo "Alejandro/$APP" "$TAG" "SHA256SUMS.txt" 2>/dev/null || true
-          echo "[+] Uploading updated SHA256SUMS.txt..."
-          tea releases assets create --login yumedevs --repo "Alejandro/$APP" "$TAG" "SHA256SUMS.txt"
-          
-          echo "[✓] All assets successfully published to Gitea release!"
