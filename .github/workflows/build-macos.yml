@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: ${{ inputs.app == 'all' && fromJSON('["curve","central","prism","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial","sonic"]') || fromJSON(format('["{0}"]', inputs.app)) }}
+        app: ${{ inputs.app == 'all' && fromJSON('["central","prism","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial","sonic","curve"]') || fromJSON(format('["{0}"]', inputs.app)) }}
 
     steps:
       - name: Checkout Builder
@@ -99,7 +99,7 @@ jobs:
           
           # Read version from Cargo.toml
           VERSION=$(awk '
-            /^\[/ { in_pkg = ($0 == "[workspace.package]") ; next }
+            /^\[/ { in_pkg = ($0 == "[workspace.package]" || $0 == "[package]") ; next }
             in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }
           ' Cargo.toml)
           
@@ -114,15 +114,22 @@ jobs:
           chmod +x packaging/macos/package.sh
           ./packaging/macos/package.sh --arch "$ARCH"
           
-          # Ensure canonical DMG name exists
+          # Ensure canonical names exist
           DIST="dist/release"
           mkdir -p "$DIST"
           CANONICAL_DMG="$DIST/${APP}-${VERSION}-macos-${ARCH}.dmg"
           
           BUILT_DMG=$(find "$DIST" -maxdepth 1 -name "*.dmg" | head -n 1)
           if [[ -n "$BUILT_DMG" && "$BUILT_DMG" != "$CANONICAL_DMG" ]]; then
-            echo "==> Aliasing $BUILT_DMG to $CANONICAL_DMG"
-            cp "$BUILT_DMG" "$CANONICAL_DMG"
+            echo "==> Renaming $BUILT_DMG to $CANONICAL_DMG"
+            mv "$BUILT_DMG" "$CANONICAL_DMG"
+          fi
+
+          CANONICAL_CLI="$DIST/${APP}-cli-${VERSION}-macos-${ARCH}.zip"
+          BUILT_CLI=$(find "$DIST" -maxdepth 1 -name "*cli*.zip" | head -n 1)
+          if [[ -n "$BUILT_CLI" && "$BUILT_CLI" != "$CANONICAL_CLI" ]]; then
+            echo "==> Renaming $BUILT_CLI to $CANONICAL_CLI"
+            mv "$BUILT_CLI" "$CANONICAL_CLI"
           fi
           
           ls -lh "$DIST"
@@ -199,7 +206,9 @@ jobs:
               print(sf.read())
 
           # 3. Upload built assets and updated SHA256SUMS.txt
-          files_to_upload = sorted([f for f in os.listdir(dist_dir) if f.endswith(".dmg") or f == "SHA256SUMS.txt"])
+          files_to_upload = sorted([f for f in os.listdir(dist_dir) if f.endswith(".dmg") or f.endswith(".zip")])
+          if os.path.exists(sums_path) and "SHA256SUMS.txt" not in files_to_upload:
+              files_to_upload.append("SHA256SUMS.txt")
           
           for f in files_to_upload:
               fpath = os.path.join(dist_dir, f)
