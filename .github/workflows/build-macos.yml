@@ -92,7 +92,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-${{ matrix.app }}-${{ hashFiles(format('{0}/Cargo.lock', runner.temp)) }}
+          key: ${{ runner.os }}-cargo-${{ matrix.app }}-${{ hashFiles(format('{0}/{1}/Cargo.lock', runner.temp, matrix.app)) }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.app }}-
             ${{ runner.os }}-cargo-
