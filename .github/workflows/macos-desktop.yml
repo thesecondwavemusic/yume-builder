@@ -7,7 +7,7 @@ on:
         description: 'App to pre-install and open on desktop'
         required: true
         type: choice
-        default: 'curve'
+        default: 'central'
         options:
           - 'curve'
           - 'prism'
@@ -43,27 +43,32 @@ jobs:
           KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
           PASSWORD="${{ inputs.vnc_password || 'yumedevs' }}"
           
-          echo "==> Creating dedicated VNC user (bypasses macOS SecureToken restrictions)..."
-          sudo dscl . -create /Users/vncuser
-          sudo dscl . -create /Users/vncuser UserShell /bin/bash
-          sudo dscl . -create /Users/vncuser RealName "VNC User"
-          sudo dscl . -create /Users/vncuser UniqueID 1001
-          sudo dscl . -create /Users/vncuser PrimaryGroupID 80
-          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
-          sudo dscl . -passwd /Users/vncuser "$PASSWORD"
-          sudo createhomedir -c -u vncuser > /dev/null || true
+          echo "==> Configuring Apple Screen Sharing and VNC Password..."
+          # Set VNC password for standard VNC viewers (TigerVNC, RealVNC, UltraVNC)
+          sudo $KICKSTART -configure -clientopts -setvncpw -vncpw "$PASSWORD"
+          
+          # Allow all users, enable legacy VNC mode, and grant full control privileges
+          sudo $KICKSTART -activate \
+            -configure -allowAccessFor -allUsers \
+            -privs -all \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -restart -agent -console
+            
+          echo "==> Setting local user passwords so user-login also works..."
+          sudo dscl . -passwd /Users/runner "$PASSWORD" || true
+          
+          # Also configure dedicated vncuser account
+          sudo dscl . -create /Users/vncuser || true
+          sudo dscl . -create /Users/vncuser UserShell /bin/bash || true
+          sudo dscl . -create /Users/vncuser RealName "VNC User" || true
+          sudo dscl . -create /Users/vncuser UniqueID 1001 || true
+          sudo dscl . -create /Users/vncuser PrimaryGroupID 80 || true
+          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser || true
+          sudo dscl . -passwd /Users/vncuser "$PASSWORD" || true
+          sudo createhomedir -c -u vncuser > /dev/null 2>&1 || true
           sudo dseditgroup -o edit -a vncuser -t user admin || true
           
-          # Enable Screen Sharing launchd hook
-          echo -n enabled | sudo tee /Library/Preferences/com.apple.ScreenSharing.launchd > /dev/null
-          
-          # Configure Remote Management / VNC agent
-          sudo $KICKSTART -configure -allowAccessFor -allUsers -privs -all
-          sudo $KICKSTART -configure -clientopts -setvnclegacy -vnclegacy yes
-          sudo $KICKSTART -restart -agent -console
-          sudo $KICKSTART -activate
-          
-          echo "==> Apple VNC server active on port 5900 (User: vncuser, Password: $PASSWORD)"
+          echo "==> Apple VNC server active on port 5900 (Password: $PASSWORD)"
 
       - name: Download and Mount Selected App(s)
         env:
@@ -99,11 +104,18 @@ jobs:
             fi
           done
           
+          # Remove quarantine attributes to prevent any Gatekeeper dialogs
+          xattr -cr "$DOWNLOAD_DIR" 2>/dev/null || true
+          
           # Pre-launch target app
           TARGET_APP=$(find /Volumes -maxdepth 3 -name "*.app" ! -path "*/Macintosh HD*" 2>/dev/null | head -n 1)
           if [[ -n "$TARGET_APP" ]]; then
-            echo "==> Pre-launching $TARGET_APP on macOS display..."
-            open "$TARGET_APP" || true
+            echo "==> Copying $TARGET_APP to /Applications..."
+            sudo cp -R "$TARGET_APP" /Applications/ || true
+            APP_NAME=$(basename "$TARGET_APP")
+            xattr -cr "/Applications/$APP_NAME" 2>/dev/null || true
+            echo "==> Pre-launching /Applications/$APP_NAME on macOS display..."
+            open "/Applications/$APP_NAME" || open "$TARGET_APP" || true
           fi
 
       - name: Start Direct TCP Tunnel (bore)
