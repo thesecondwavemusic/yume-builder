@@ -1,0 +1,131 @@
+name: macOS Remote Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'App to pre-install and open on desktop'
+        required: true
+        type: choice
+        default: 'curve'
+        options:
+          - 'curve'
+          - 'prism'
+          - 'central'
+          - 'frame'
+          - 'reel'
+          - 'surface'
+          - 'forge'
+          - 'anima'
+          - 'kinetic'
+          - 'lux'
+          - 'folio'
+          - 'editorial'
+          - 'sonic'
+          - 'all'
+      vnc_password:
+        description: 'VNC Password'
+        required: false
+        type: string
+        default: 'yumedevs'
+
+jobs:
+  desktop:
+    runs-on: macos-latest
+    timeout-minutes: 360 # Up to 6 hours session
+
+    steps:
+      - name: Checkout Builder
+        uses: actions/checkout@v4
+
+      - name: Configure macOS Screen Sharing / VNC Server
+        run: |
+          KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+          PASSWORD="${{ inputs.vnc_password || 'yumedevs' }}"
+          
+          echo "==> Configuring Apple Screen Sharing / VNC on macOS..."
+          echo "runner:$PASSWORD" | sudo chpasswd
+          
+          sudo $KICKSTART -configure -allowAccessFor -allUsers -privs -all
+          sudo $KICKSTART -configure -clientopts -setvnclegacy -vnclegacy yes
+          sudo $KICKSTART -configure -clientopts -setvncpw -vncpw "$PASSWORD"
+          sudo $KICKSTART -activate
+          sudo $KICKSTART -configure -access -on
+          sudo $KICKSTART -restart -agent -console
+          
+          echo "==> Apple VNC server active on port 5900 with password '$PASSWORD'"
+
+      - name: Download and Mount Selected App(s)
+        env:
+          APP: ${{ inputs.app }}
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          DOWNLOAD_DIR="$HOME/Desktop/Yume_Apps"
+          mkdir -p "$DOWNLOAD_DIR"
+          
+          APPS_TO_GET=()
+          if [[ "$APP" == "all" ]]; then
+            APPS_TO_GET=("central" "curve" "prism" "frame" "reel" "surface" "forge" "anima" "kinetic" "lux" "folio" "editorial" "sonic")
+          else
+            APPS_TO_GET=("$APP")
+          fi
+          
+          for a in "${APPS_TO_GET[@]}"; do
+            echo "==> Fetching latest release info for $a from Gitea..."
+            REL_JSON=$(curl -s -f -H "Authorization: token $FORGE_TOKEN" "https://code.yumedevs.com/api/v1/repos/Alejandro/${a}/releases/latest" 2>/dev/null || true)
+            if [[ -z "$REL_JSON" ]]; then
+              echo "Warning: Could not fetch release for $a"
+              continue
+            fi
+            
+            DMG_URL=$(python3 -c "import sys, json; data=json.loads(sys.stdin.read()); print(next((x['browser_download_url'] for x in data.get('assets',[]) if x['name'].endswith('.dmg')), ''))" <<< "$REL_JSON")
+            DMG_NAME=$(python3 -c "import sys, json; data=json.loads(sys.stdin.read()); print(next((x['name'] for x in data.get('assets',[]) if x['name'].endswith('.dmg')), ''))" <<< "$REL_JSON")
+            
+            if [[ -n "$DMG_URL" && -n "$DMG_NAME" ]]; then
+              echo "==> Downloading $DMG_NAME..."
+              curl -s -f -H "Authorization: token $FORGE_TOKEN" "$DMG_URL" -o "$DOWNLOAD_DIR/$DMG_NAME"
+              echo "==> Mounting $DMG_NAME..."
+              hdiutil attach "$DOWNLOAD_DIR/$DMG_NAME" || true
+            fi
+          done
+          
+          # Pre-launch target app
+          TARGET_APP=$(find /Volumes -maxdepth 3 -name "*.app" 2>/dev/null | head -n 1)
+          if [[ -n "$TARGET_APP" ]]; then
+            echo "==> Pre-launching $TARGET_APP on macOS display..."
+            open "$TARGET_APP" || true
+          fi
+
+      - name: Start Direct TCP Tunnel (bore)
+        run: |
+          echo "==> Installing bore-cli for 1-click direct VNC connection..."
+          brew install bore-cli
+          
+          nohup bore local 5900 --to bore.pub > /tmp/bore.log 2>&1 &
+          sleep 4
+          
+          cat /tmp/bore.log
+          BORE_ADDR=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log | head -n 1 | awk '{print $NF}' || true)
+          
+          echo " "
+          echo "=========================================================================="
+          echo "             🖥️  macOS GRAPHICAL DESKTOP READY  🖥️                        "
+          echo "=========================================================================="
+          echo " "
+          if [[ -n "$BORE_ADDR" ]]; then
+            echo "  👉 OPCIÓN 1 (Conexión Directa en 1 Clic con cualquier visor VNC):"
+            echo "     Servidor VNC: $BORE_ADDR"
+            echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
+            echo " "
+          fi
+          echo "  👉 OPCIÓN 2 (Túnel Privado SSH vía PowerShell):"
+          echo "     ssh -L 5900:127.0.0.1:5900 <pega_el_usuario_de_tmate_abajo>"
+          echo "     Servidor VNC: localhost:5900"
+          echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
+          echo " "
+          echo "=========================================================================="
+
+      - name: Start Tmate Tunnel (Keeps Mac session alive up to 6 hours)
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: false
