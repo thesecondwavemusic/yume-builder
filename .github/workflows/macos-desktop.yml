@@ -43,17 +43,33 @@ jobs:
           KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
           PASSWORD="${{ inputs.vnc_password || 'yumedevs' }}"
           
-          echo "==> Configuring Apple Screen Sharing and VNC Password..."
-          # Set VNC password for standard VNC viewers (TigerVNC, RealVNC, UltraVNC)
-          sudo $KICKSTART -configure -clientopts -setvncpw -vncpw "$PASSWORD"
+          echo "==> Disabling display sleep and keeping system awake..."
+          sudo pmset -a displaysleep 0 sleep 0 disksleep 0 || true
+          caffeinate -d -i -m -u &
           
-          # Allow all users, enable legacy VNC mode, and grant full control privileges
-          sudo $KICKSTART -activate \
-            -configure -allowAccessFor -allUsers \
-            -privs -all \
-            -clientopts -setvnclegacy -vnclegacy yes \
-            -restart -agent -console
-            
+          echo "==> Configuring automatic GUI login for runner..."
+          sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "runner"
+          sudo python3 -c "
+          key = b'\x7d\x89\x52\x23\xd2\xbc\xdd\xea\xa3\xb9\x1f'
+          pw = b'$PASSWORD'
+          encoded = bytearray(len(pw))
+          for i in range(len(pw)):
+              encoded[i] = pw[i] ^ key[i % len(key)]
+          with open('/etc/kcpassword', 'wb') as f:
+              f.write(bytes(encoded))
+          "
+          sudo chmod 600 /etc/kcpassword
+          sudo chown root:wheel /etc/kcpassword
+          
+          echo "==> Configuring Apple Screen Sharing and VNC Password..."
+          echo "$PASSWORD" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA"}; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
+          
+          sudo $KICKSTART -configure -allowAccessFor -allUsers -privs -all
+          sudo $KICKSTART -configure -clientopts -setvnclegacy -vnclegacy yes
+          sudo $KICKSTART -configure -clientopts -setvncpw -vncpw "$PASSWORD"
+          sudo $KICKSTART -restart -agent -console
+          sudo $KICKSTART -activate
+          
           echo "==> Setting local user passwords so user-login also works..."
           sudo dscl . -passwd /Users/runner "$PASSWORD" || true
           
@@ -67,6 +83,9 @@ jobs:
           sudo dscl . -passwd /Users/vncuser "$PASSWORD" || true
           sudo createhomedir -c -u vncuser > /dev/null 2>&1 || true
           sudo dseditgroup -o edit -a vncuser -t user admin || true
+          
+          echo "==> Triggering display wake and initial framebuffer capture..."
+          screencapture -x /tmp/screen_wake.png || true
           
           echo "==> Apple VNC server active on port 5900 (Password: $PASSWORD)"
 
@@ -118,33 +137,48 @@ jobs:
             open "/Applications/$APP_NAME" || open "$TARGET_APP" || true
           fi
 
-      - name: Start Direct TCP Tunnel (bore)
+      - name: Start Direct TCP Tunnel and Web Client
         run: |
-          echo "==> Installing bore-cli for 1-click direct VNC connection..."
+          echo "==> Installing bore-cli..."
           brew install bore-cli
           
-          nohup bore local 5900 --to bore.pub > /tmp/bore.log 2>&1 &
-          sleep 4
+          echo "==> Setting up noVNC (HTML5 browser client)..."
+          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/noVNC
+          nohup /tmp/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6080 > /tmp/novnc.log 2>&1 &
+          sleep 2
           
-          cat /tmp/bore.log
-          BORE_ADDR=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log | head -n 1 | awk '{print $NF}' || true)
+          echo "==> Starting bore tunnels for VNC (5900) and Web noVNC (6080)..."
+          nohup bore local 5900 --to bore.pub > /tmp/bore_vnc.log 2>&1 &
+          nohup bore local 6080 --to bore.pub > /tmp/bore_web.log 2>&1 &
+          sleep 5
+          
+          cat /tmp/bore_vnc.log
+          cat /tmp/bore_web.log
+          
+          BORE_VNC=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore_vnc.log | head -n 1 | awk '{print $NF}' || true)
+          BORE_WEB_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore_web.log | head -n 1 | awk -F: '{print $NF}' || true)
           
           echo " "
           echo "=========================================================================="
           echo "             🖥️  macOS GRAPHICAL DESKTOP READY  🖥️                        "
           echo "=========================================================================="
           echo " "
-          if [[ -n "$BORE_ADDR" ]]; then
-            echo "  👉 OPCIÓN 1 (Conexión Directa en 1 Clic con TigerVNC Viewer):"
-            echo "     Servidor VNC: $BORE_ADDR"
-            echo "     Usuario:      vncuser"
-            echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
+          if [[ -n "$BORE_WEB_PORT" ]]; then
+            echo "  🌐 OPCIÓN A (¡1 Clic en tu NAVEGADOR WEB! Sin instalar nada):"
+            echo "     URL:        http://bore.pub:${BORE_WEB_PORT}/vnc.html"
+            echo "     Contraseña: ${{ inputs.vnc_password || 'yumedevs' }}"
             echo " "
           fi
-          echo "  👉 OPCIÓN 2 (Túnel Privado SSH vía PowerShell):"
+          if [[ -n "$BORE_VNC" ]]; then
+            echo "  👉 OPCIÓN B (Conexión Directa con TigerVNC Viewer):"
+            echo "     Servidor VNC: $BORE_VNC"
+            echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
+            echo "     (Tip: En F8 -> Options -> Compression, pon 'Auto' o 'Raw')"
+            echo " "
+          fi
+          echo "  👉 OPCIÓN C (Túnel SSH vía PowerShell):"
           echo "     ssh -L 5900:127.0.0.1:5900 <pega_el_usuario_de_tmate_abajo>"
           echo "     Servidor VNC: localhost:5900"
-          echo "     Usuario:      vncuser"
           echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
           echo " "
           echo "=========================================================================="
