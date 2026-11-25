@@ -6,6 +6,14 @@ import subprocess
 import urllib.request
 import urllib.error
 
+# Force utf-8 for Windows console
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 app = os.environ["APP"]
 version = os.environ["VERSION"]
 arch = os.environ["ARCH"]
@@ -59,9 +67,14 @@ for fname, fpath in files_to_hash.items():
 # 3. Read and merge existing SHA256SUMS.txt
 all_sums = {}
 if "SHA256SUMS.txt" in existing_assets:
+    # Use Authorization header for download
     sums_url = existing_assets["SHA256SUMS.txt"]["browser_download_url"]
     try:
-        with urllib.request.urlopen(sums_url) as resp:
+        sums_req = urllib.request.Request(
+            sums_url,
+            headers={"Authorization": f"token {token}", "User-Agent": "Yume-Windows-Builder"}
+        )
+        with urllib.request.urlopen(sums_req) as resp:
             content = resp.read().decode("utf-8-sig", errors="replace")
             for line in content.splitlines():
                 parts = line.strip().split(None, 1)
@@ -107,7 +120,7 @@ def upload_file(filename, filepath):
     if res.returncode != 0:
         print(f"Error uploading {filename}: {res.stderr}")
         sys.exit(1)
-    print(f"[✓] Successfully uploaded '{filename}'")
+    print(f"[OK] Successfully uploaded '{filename}'")
 
 # Upload MSIs and ZIPs
 for fname, fpath in files_to_hash.items():
@@ -115,4 +128,4 @@ for fname, fpath in files_to_hash.items():
 
 # Upload updated SHA256SUMS.txt
 upload_file("SHA256SUMS.txt", sums_file_path)
-print("[✓] All Windows release assets uploaded successfully to Gitea!")
+print("[OK] All Windows release assets uploaded successfully to Gitea!")
