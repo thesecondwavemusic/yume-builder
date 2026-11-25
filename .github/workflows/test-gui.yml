@@ -21,11 +21,14 @@ jobs:
           curl -s -f -H "Authorization: token $FORGE_TOKEN" "$DMG_URL" -o /tmp/central.dmg
           hdiutil attach /tmp/central.dmg
           
-          sudo cp -R /Volumes/Central*/Central.app /Applications/
-          xattr -cr /Applications/Central.app || true
+          APP_PATH=$(find /Volumes -maxdepth 3 -name "*.app" ! -path "*/Macintosh HD*" 2>/dev/null | head -n 1)
+          echo "==> Found App at: $APP_PATH"
+          sudo cp -R "$APP_PATH" /Applications/
+          APP_NAME=$(basename "$APP_PATH")
+          xattr -cr "/Applications/$APP_NAME" || true
           
-          echo "==> Launching Central.app..."
-          open /Applications/Central.app
+          echo "==> Launching /Applications/$APP_NAME..."
+          open "/Applications/$APP_NAME"
           sleep 6
           
           echo "==> Taking screenshot with screencapture..."
