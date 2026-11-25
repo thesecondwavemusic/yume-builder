@@ -43,26 +43,27 @@ jobs:
           KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
           PASSWORD="${{ inputs.vnc_password || 'yumedevs' }}"
           
-          echo "==> Configuring Apple Screen Sharing / VNC on macOS..."
-          sudo dscl . -passwd /Users/runner "$PASSWORD" 2>/dev/null || true
+          echo "==> Creating dedicated VNC user (bypasses macOS SecureToken restrictions)..."
+          sudo dscl . -create /Users/vncuser
+          sudo dscl . -create /Users/vncuser UserShell /bin/bash
+          sudo dscl . -create /Users/vncuser RealName "VNC User"
+          sudo dscl . -create /Users/vncuser UniqueID 1001
+          sudo dscl . -create /Users/vncuser PrimaryGroupID 80
+          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
+          sudo dscl . -passwd /Users/vncuser "$PASSWORD"
+          sudo createhomedir -c -u vncuser > /dev/null || true
+          sudo dseditgroup -o edit -a vncuser -t user admin || true
           
           # Enable Screen Sharing launchd hook
           echo -n enabled | sudo tee /Library/Preferences/com.apple.ScreenSharing.launchd > /dev/null
           
-          # Write exact legacy VNC password hash for TigerVNC/RealVNC
-          # Computed via Apple's XOR obfuscation key for password "yumedevs":
-          echo "6E413C0BEFCDB391FF1C39567390ADCA" | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
-          sudo chmod 644 /Library/Preferences/com.apple.VNCSettings.txt
-          sudo chown root:wheel /Library/Preferences/com.apple.VNCSettings.txt
-          
           # Configure Remote Management / VNC agent
           sudo $KICKSTART -configure -allowAccessFor -allUsers -privs -all
           sudo $KICKSTART -configure -clientopts -setvnclegacy -vnclegacy yes
-          sudo $KICKSTART -activate
-          sudo $KICKSTART -configure -access -on
           sudo $KICKSTART -restart -agent -console
+          sudo $KICKSTART -activate
           
-          echo "==> Apple VNC server active on port 5900 with password '$PASSWORD'"
+          echo "==> Apple VNC server active on port 5900 (User: vncuser, Password: $PASSWORD)"
 
       - name: Download and Mount Selected App(s)
         env:
@@ -122,14 +123,16 @@ jobs:
           echo "=========================================================================="
           echo " "
           if [[ -n "$BORE_ADDR" ]]; then
-            echo "  👉 OPCIÓN 1 (Conexión Directa en 1 Clic con cualquier visor VNC):"
+            echo "  👉 OPCIÓN 1 (Conexión Directa en 1 Clic con TigerVNC Viewer):"
             echo "     Servidor VNC: $BORE_ADDR"
+            echo "     Usuario:      vncuser"
             echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
             echo " "
           fi
           echo "  👉 OPCIÓN 2 (Túnel Privado SSH vía PowerShell):"
           echo "     ssh -L 5900:127.0.0.1:5900 <pega_el_usuario_de_tmate_abajo>"
           echo "     Servidor VNC: localhost:5900"
+          echo "     Usuario:      vncuser"
           echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
           echo " "
           echo "=========================================================================="
