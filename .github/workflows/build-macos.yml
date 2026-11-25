@@ -221,11 +221,11 @@ jobs:
               print(f"[+] Uploading {f}...")
               up_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/{rel_id}/assets"
               res = subprocess.run(
-                  ["curl", "-s", "-f", "-X", "POST", "-H", f"Authorization: token {token}", "-F", f"attachment=@{fpath}", up_url],
+                  ["curl", "-S", "-s", "-X", "POST", "-H", f"Authorization: token {token}", "-F", f"attachment=@{fpath}", up_url],
                   capture_output=True, text=True
               )
-              if res.returncode != 0:
-                  print(f"Error uploading {f}: {res.stderr}", file=sys.stderr)
+              if res.returncode != 0 or ("id" not in res.stdout and "browser_download_url" not in res.stdout):
+                  print(f"Error uploading {f} (exit {res.returncode}):\nSTDERR: {res.stderr}\nSTDOUT: {res.stdout}", file=sys.stderr)
                   sys.exit(1)
               print(f"[✓] Successfully uploaded {f}!")
 
