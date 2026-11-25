@@ -41,7 +41,7 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     strategy:
