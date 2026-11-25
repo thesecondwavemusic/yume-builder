@@ -47,8 +47,31 @@ jobs:
           sudo pmset -a displaysleep 0 sleep 0 disksleep 0 || true
           caffeinate -d -i -m -u &
           
-          echo "==> Configuring automatic GUI login for runner..."
-          sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "runner"
+          echo "==> Creating dedicated vncuser account..."
+          sudo dscl . -create /Users/vncuser || true
+          sudo dscl . -create /Users/vncuser UserShell /bin/bash || true
+          sudo dscl . -create /Users/vncuser RealName "VNC User" || true
+          sudo dscl . -create /Users/vncuser UniqueID 1001 || true
+          sudo dscl . -create /Users/vncuser PrimaryGroupID 80 || true
+          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser || true
+          sudo dscl . -passwd /Users/vncuser "$PASSWORD" || true
+          sudo createhomedir -c -u vncuser > /dev/null 2>&1 || true
+          sudo dseditgroup -o edit -a vncuser -t user admin || true
+          
+          echo "==> Suppressing SetupAssistant for vncuser (prevents blank setup wizard screen)..."
+          sudo mkdir -p /Users/vncuser/Library/Preferences
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeCloudSetup -bool TRUE
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeSiriSetup -bool TRUE
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeePrivacy -bool TRUE
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeAppearanceSetup -bool TRUE
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeTrueTone -bool TRUE
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeTouchIDSetup -bool TRUE
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant LastSeenBuddyBuildVersion -string "9999"
+          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant LastSeenCloudProductVersion -string "99.99"
+          sudo chown -R vncuser:admin /Users/vncuser/Library
+          
+          echo "==> Configuring automatic GUI login for vncuser..."
+          sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "vncuser"
           sudo python3 -c "
           key = b'\x7d\x89\x52\x23\xd2\xbc\xdd\xea\xa3\xb9\x1f'
           pw = b'$PASSWORD'
@@ -70,24 +93,10 @@ jobs:
           sudo $KICKSTART -restart -agent -console
           sudo $KICKSTART -activate
           
-          echo "==> Setting local user passwords so user-login also works..."
-          sudo dscl . -passwd /Users/runner "$PASSWORD" || true
-          
-          # Also configure dedicated vncuser account
-          sudo dscl . -create /Users/vncuser || true
-          sudo dscl . -create /Users/vncuser UserShell /bin/bash || true
-          sudo dscl . -create /Users/vncuser RealName "VNC User" || true
-          sudo dscl . -create /Users/vncuser UniqueID 1001 || true
-          sudo dscl . -create /Users/vncuser PrimaryGroupID 80 || true
-          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser || true
-          sudo dscl . -passwd /Users/vncuser "$PASSWORD" || true
-          sudo createhomedir -c -u vncuser > /dev/null 2>&1 || true
-          sudo dseditgroup -o edit -a vncuser -t user admin || true
-          
           echo "==> Triggering display wake and initial framebuffer capture..."
           screencapture -x /tmp/screen_wake.png || true
           
-          echo "==> Apple VNC server active on port 5900 (Password: $PASSWORD)"
+          echo "==> Apple VNC server active on port 5900 (User: vncuser, Password: $PASSWORD)"
 
       - name: Download and Mount Selected App(s)
         env:
