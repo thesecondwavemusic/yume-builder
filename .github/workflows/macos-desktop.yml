@@ -107,6 +107,8 @@ jobs:
           fi
 
       - name: Start Live Web Remote Console
+        env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
         run: |
           chmod +x scripts/web_streamer.py
           nohup python3 scripts/web_streamer.py > /tmp/streamer.log 2>&1 &
@@ -128,6 +130,12 @@ jobs:
             echo "     http://bore.pub:${BORE_PORT}"
             echo " "
             echo "     ¡Haz clic en los botones de la app directamente desde tu navegador!"
+            
+            # Auto-publish live URL to Gitea issue #1 and GitHub Step Summary for instant retrieval
+            curl -s -X PATCH -H "Authorization: token $FORGE_TOKEN" -H "Content-Type: application/json" \
+              -d "{\"body\": \"http://bore.pub:${BORE_PORT}\"}" \
+              https://code.yumedevs.com/api/v1/repos/Alejandro/central/issues/1 || true
+            echo "### 🍏 macOS Live Console: [http://bore.pub:${BORE_PORT}](http://bore.pub:${BORE_PORT})" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "=========================================================================="
 
