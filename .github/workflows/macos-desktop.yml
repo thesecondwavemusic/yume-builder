@@ -44,7 +44,7 @@ jobs:
           PASSWORD="${{ inputs.vnc_password || 'yumedevs' }}"
           
           echo "==> Configuring Apple Screen Sharing / VNC on macOS..."
-          echo "runner:$PASSWORD" | sudo chpasswd
+          sudo dscl . -passwd /Users/runner "$PASSWORD" 2>/dev/null || true
           
           sudo $KICKSTART -configure -allowAccessFor -allUsers -privs -all
           sudo $KICKSTART -configure -clientopts -setvnclegacy -vnclegacy yes
@@ -90,7 +90,7 @@ jobs:
           done
           
           # Pre-launch target app
-          TARGET_APP=$(find /Volumes -maxdepth 3 -name "*.app" 2>/dev/null | head -n 1)
+          TARGET_APP=$(find /Volumes -maxdepth 3 -name "*.app" ! -path "*/Macintosh HD*" 2>/dev/null | head -n 1)
           if [[ -n "$TARGET_APP" ]]; then
             echo "==> Pre-launching $TARGET_APP on macOS display..."
             open "$TARGET_APP" || true
