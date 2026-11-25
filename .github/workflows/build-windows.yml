@@ -1,0 +1,275 @@
+name: Build Windows Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'App to build'
+        required: true
+        type: choice
+        default: 'central'
+        options:
+          - 'central'
+          - 'prism'
+          - 'curve'
+          - 'frame'
+          - 'reel'
+          - 'surface'
+          - 'forge'
+          - 'anima'
+          - 'kinetic'
+          - 'lux'
+          - 'folio'
+          - 'editorial'
+          - 'sonic'
+          - 'all'
+      arch:
+        description: 'Target Architecture'
+        required: true
+        type: choice
+        default: 'x64'
+        options:
+          - 'x64'
+          - 'x86'
+          - 'arm64'
+      tag:
+        description: 'Release Tag (optional, e.g. v0.19.2; autodetects from Cargo.toml if blank)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ inputs.app == 'all' && fromJSON('["central","prism","curve","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial","sonic"]') || fromJSON(format('["{0}"]', inputs.app)) }}
+
+    steps:
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.arch == 'x64' && 'x86_64-pc-windows-msvc' || (inputs.arch == 'x86' && 'i686-pc-windows-msvc' || 'aarch64-pc-windows-msvc') }}
+
+      - name: Install WiX Toolset v5
+        shell: pwsh
+        run: |
+          Write-Host "==> Installing WiX Toolset v5..."
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+          wix --version
+
+      - name: Clone from Private Forge (Ephemeral Runner Storage)
+        shell: pwsh
+        env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          APP: ${{ matrix.app }}
+        run: |
+          Write-Host "==> Cloning $env:APP from private forge..."
+          $cloneDir = Join-Path $env:RUNNER_TEMP $env:APP
+          if (Test-Path $cloneDir) { Remove-Item -Recurse -Force $cloneDir }
+          git clone --depth 1 "https://oauth2:${env:FORGE_TOKEN}@code.yumedevs.com/Alejandro/${env:APP}.git" $cloneDir
+          "APP_DIR=$cloneDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build and Package Windows MSI & Portable ZIP
+        shell: pwsh
+        env:
+          APP: ${{ matrix.app }}
+          ARCH: ${{ inputs.arch }}
+        run: |
+          cd $env:APP_DIR
+          
+          # Read version from Cargo.toml
+          $version = ""
+          $inPkg = $false
+          foreach ($line in Get-Content 'Cargo.toml') {
+            if ($line -match '^\s*\[') { $inPkg = ($line.Trim() -eq '[workspace.package]'); continue }
+            if ($inPkg -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $version = $matches[1]; break }
+          }
+          if (-not $version) { throw "Error: Could not determine version from Cargo.toml" }
+          
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "==> Packaging $env:APP version $version ($env:ARCH)..."
+          
+          $distDir = Join-Path $env:APP_DIR "dist\release"
+          New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+          
+          if (Test-Path "packaging/windows/package.ps1") {
+            Write-Host "==> Running custom packaging script..."
+            pwsh packaging/windows/package.ps1 -Arch $env:ARCH
+          } else {
+            Write-Host "==> Building with standard cargo..."
+            $target = switch ($env:ARCH) {
+              'x64' { 'x86_64-pc-windows-msvc' }
+              'x86' { 'i686-pc-windows-msvc' }
+              'arm64' { 'aarch64-pc-windows-msvc' }
+            }
+            cargo build --release --locked --target $target
+            
+            $binName = "$env:APP.exe"
+            $binPath = "target\$target\release\$binName"
+            if (Test-Path $binPath) {
+              $portableDir = "target\windows-package\$env:APP-$version-windows-$env:ARCH-portable"
+              New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+              Copy-Item $binPath $portableDir
+              Compress-Archive -Path $portableDir -DestinationPath "$distDir\$env:APP-$version-windows-$env:ARCH-portable.zip" -Force
+            }
+          }
+          
+          # Create canonical aliases for Yume Suite
+          if (Test-Path $distDir) {
+            $msiFiles = Get-ChildItem -Path $distDir -Filter "*.msi"
+            foreach ($msi in $msiFiles) {
+              $canonicalMsi = Join-Path $distDir "$env:APP-$version-windows-$env:ARCH.msi"
+              if ($msi.FullName -ne $canonicalMsi) {
+                Copy-Item $msi.FullName $canonicalMsi -Force
+              }
+              $yumeMsi = Join-Path $distDir "yume-$env:APP-$version-windows-$env:ARCH.msi"
+              Copy-Item $msi.FullName $yumeMsi -Force
+              Write-Host "==> Created canonical MSI: $canonicalMsi"
+            }
+            
+            $zipFiles = Get-ChildItem -Path $distDir -Filter "*.zip"
+            foreach ($zip in $zipFiles) {
+              $canonicalZip = Join-Path $distDir "$env:APP-$version-windows-$env:ARCH-portable.zip"
+              if ($zip.FullName -ne $canonicalZip) {
+                Copy-Item $zip.FullName $canonicalZip -Force
+              }
+              Write-Host "==> Created canonical ZIP: $canonicalZip"
+            }
+          }
+          
+          Get-ChildItem -Path $distDir | Select-Object Name, Length
+
+      - name: Upload Artifacts to Gitea Release & Update Checksums
+        shell: pwsh
+        env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          APP: ${{ matrix.app }}
+          ARCH: ${{ inputs.arch }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          cd $env:APP_DIR
+          
+          python - << 'EOF'
+          import os
+          import sys
+          import json
+          import hashlib
+          import subprocess
+          import urllib.request
+          import urllib.error
+
+          app = os.environ["APP"]
+          version = os.environ["VERSION"]
+          arch = os.environ["ARCH"]
+          tag = os.environ.get("TAG_INPUT") or f"v{version}"
+          token = os.environ["FORGE_TOKEN"]
+          
+          base_url = "https://code.yumedevs.com/api/v1"
+          repo_path = f"Alejandro/{app}"
+          dist_dir = os.path.join(os.environ["APP_DIR"], "dist", "release")
+          
+          print(f"[*] Processing Windows release for {repo_path} at tag {tag}")
+          
+          # 1. Fetch release info
+          req = urllib.request.Request(
+              f"{base_url}/repos/{repo_path}/releases/tags/{tag}",
+              headers={"Authorization": f"token {token}", "User-Agent": "Yume-Windows-Builder"}
+          )
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  release_info = json.loads(resp.read().decode("utf-8"))
+          except urllib.error.HTTPError as e:
+              print(f"Error: Release {tag} not found on {repo_path} ({e})")
+              sys.exit(1)
+              
+          release_id = release_info["id"]
+          existing_assets = {a["name"]: a for a in release_info.get("assets", [])}
+          print(f"[*] Found release ID {release_id} with {len(existing_assets)} existing assets")
+          
+          # 2. Collect files to upload from dist/release (.msi, .exe, .zip)
+          files_to_hash = {}
+          if os.path.isdir(dist_dir):
+              for f in os.listdir(dist_dir):
+                  if f.endswith(".msi") or f.endswith(".zip") or f.endswith(".exe"):
+                      if f != "SHA256SUMS.txt":
+                          files_to_hash[f] = os.path.join(dist_dir, f)
+                          
+          if not files_to_hash:
+              print("Error: No .msi or .zip artifacts found to upload!")
+              sys.exit(1)
+              
+          new_hashes = {}
+          for fname, fpath in files_to_hash.items():
+              h = hashlib.sha256()
+              with open(fpath, "rb") as bf:
+                  while chunk := bf.read(65536):
+                      h.update(chunk)
+              digest = h.hexdigest().upper()
+              new_hashes[fname] = digest
+              print(f"[+] Computed SHA-256 for {fname}: {digest}")
+              
+          # 3. Read and merge existing SHA256SUMS.txt
+          all_sums = {}
+          if "SHA256SUMS.txt" in existing_assets:
+              sums_url = existing_assets["SHA256SUMS.txt"]["browser_download_url"]
+              try:
+                  with urllib.request.urlopen(sums_url) as resp:
+                      content = resp.read().decode("utf-8-sig", errors="replace")
+                      for line in content.splitlines():
+                          parts = line.strip().split(None, 1)
+                          if len(parts) == 2 and len(parts[0]) == 64:
+                              clean_name = parts[1].lstrip("*")
+                              all_sums[clean_name] = parts[0].upper()
+                      print(f"[*] Loaded {len(all_sums)} existing checksums from release")
+              except Exception as e:
+                  print(f"[!] Warning reading existing SHA256SUMS.txt: {e}")
+                  
+          # Merge new hashes
+          for fname, digest in new_hashes.items():
+              all_sums[fname] = digest
+              
+          # Write merged SHA256SUMS.txt (pure ASCII, LF only)
+          sums_file_path = os.path.join(dist_dir, "SHA256SUMS.txt")
+          with open(sums_file_path, "wb") as sf:
+              for fname in sorted(all_sums.keys()):
+                  line = f"{all_sums[fname]}  {fname}\n"
+                  sf.write(line.encode("ascii"))
+          print(f"[*] Generated clean SHA256SUMS.txt with {len(all_sums)} total entries")
+          
+          # 4. Upload helper using curl
+          def upload_file(filename, filepath):
+              if filename in existing_assets:
+                  asset_id = existing_assets[filename]["id"]
+                  print(f"[-] Deleting previous asset '{filename}' (ID: {asset_id})...")
+                  del_cmd = [
+                      "curl", "-s", "-X", "DELETE",
+                      "-H", f"Authorization: token {token}",
+                      f"{base_url}/repos/{repo_path}/releases/{release_id}/assets/{asset_id}"
+                  ]
+                  subprocess.run(del_cmd, check=True)
+                  
+              print(f"[+] Uploading '{filename}'...")
+              up_cmd = [
+                  "curl", "-s", "-X", "POST",
+                  "-H", f"Authorization: token {token}",
+                  "-F", f"attachment=@{filepath}",
+                  f"{base_url}/repos/{repo_path}/releases/{release_id}/assets?name={filename}"
+              ]
+              res = subprocess.run(up_cmd, capture_output=True, text=True)
+              if res.returncode != 0:
+                  print(f"Error uploading {filename}: {res.stderr}")
+                  sys.exit(1)
+              print(f"[✓] Successfully uploaded '{filename}'")
+              
+          # Upload MSIs and ZIPs
+          for fname, fpath in files_to_hash.items():
+              upload_file(fname, fpath)
+              
+          # Upload updated SHA256SUMS.txt
+          upload_file("SHA256SUMS.txt", sums_file_path)
+          print("[✓] All Windows release assets uploaded successfully to Gitea!")
+          EOF
