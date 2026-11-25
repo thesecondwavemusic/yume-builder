@@ -162,8 +162,20 @@ jobs:
               ])
               rel_data = json.loads(out.decode())
           except Exception as e:
-              print(f"Error fetching release {tag}: {e}", file=sys.stderr)
-              sys.exit(1)
+              print(f"[*] Release {tag} not found, creating it...")
+              create_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases"
+              payload = json.dumps({
+                  "tag_name": tag,
+                  "name": f"Yume {app.capitalize()} {tag}",
+                  "body": f"Yume {app.capitalize()} {tag} release artifacts"
+              })
+              out = subprocess.check_output([
+                  "curl", "-s", "-f", "-X", "POST",
+                  "-H", f"Authorization: token {token}",
+                  "-H", "Content-Type: application/json",
+                  "-d", payload, create_url
+              ])
+              rel_data = json.loads(out.decode())
 
           rel_id = rel_data["id"]
           existing_assets = {a["name"]: a["id"] for a in rel_data.get("assets", [])}
