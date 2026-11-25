@@ -9,9 +9,9 @@ on:
         type: choice
         default: 'central'
         options:
+          - 'central'
           - 'curve'
           - 'prism'
-          - 'central'
           - 'frame'
           - 'reel'
           - 'surface'
@@ -23,11 +23,6 @@ on:
           - 'editorial'
           - 'sonic'
           - 'all'
-      vnc_password:
-        description: 'VNC Password'
-        required: false
-        type: string
-        default: 'yumedevs'
 
 jobs:
   desktop:
@@ -38,65 +33,14 @@ jobs:
       - name: Checkout Builder
         uses: actions/checkout@v4
 
-      - name: Configure macOS Screen Sharing / VNC Server
+      - name: Setup Tools (cliclick, bore-cli)
         run: |
-          KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
-          PASSWORD="${{ inputs.vnc_password || 'yumedevs' }}"
-          
-          echo "==> Disabling display sleep and keeping system awake..."
+          echo "==> Disabling display sleep..."
           sudo pmset -a displaysleep 0 sleep 0 disksleep 0 || true
           caffeinate -d -i -m -u &
           
-          echo "==> Creating dedicated vncuser account..."
-          sudo dscl . -create /Users/vncuser || true
-          sudo dscl . -create /Users/vncuser UserShell /bin/bash || true
-          sudo dscl . -create /Users/vncuser RealName "VNC User" || true
-          sudo dscl . -create /Users/vncuser UniqueID 1001 || true
-          sudo dscl . -create /Users/vncuser PrimaryGroupID 80 || true
-          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser || true
-          sudo dscl . -passwd /Users/vncuser "$PASSWORD" || true
-          sudo createhomedir -c -u vncuser > /dev/null 2>&1 || true
-          sudo dseditgroup -o edit -a vncuser -t user admin || true
-          
-          echo "==> Suppressing SetupAssistant for vncuser (prevents blank setup wizard screen)..."
-          sudo mkdir -p /Users/vncuser/Library/Preferences
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeCloudSetup -bool TRUE
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeSiriSetup -bool TRUE
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeePrivacy -bool TRUE
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeAppearanceSetup -bool TRUE
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeTrueTone -bool TRUE
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant DidSeeTouchIDSetup -bool TRUE
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant LastSeenBuddyBuildVersion -string "9999"
-          sudo defaults write /Users/vncuser/Library/Preferences/com.apple.SetupAssistant LastSeenCloudProductVersion -string "99.99"
-          sudo chown -R vncuser:admin /Users/vncuser/Library
-          
-          echo "==> Configuring automatic GUI login for vncuser..."
-          sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "vncuser"
-          sudo python3 -c "
-          key = b'\x7d\x89\x52\x23\xd2\xbc\xdd\xea\xa3\xb9\x1f'
-          pw = b'$PASSWORD'
-          encoded = bytearray(len(pw))
-          for i in range(len(pw)):
-              encoded[i] = pw[i] ^ key[i % len(key)]
-          with open('/etc/kcpassword', 'wb') as f:
-              f.write(bytes(encoded))
-          "
-          sudo chmod 600 /etc/kcpassword
-          sudo chown root:wheel /etc/kcpassword
-          
-          echo "==> Configuring Apple Screen Sharing and VNC Password..."
-          echo "$PASSWORD" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA"}; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
-          
-          sudo $KICKSTART -configure -allowAccessFor -allUsers -privs -all
-          sudo $KICKSTART -configure -clientopts -setvnclegacy -vnclegacy yes
-          sudo $KICKSTART -configure -clientopts -setvncpw -vncpw "$PASSWORD"
-          sudo $KICKSTART -restart -agent -console
-          sudo $KICKSTART -activate
-          
-          echo "==> Triggering display wake and initial framebuffer capture..."
-          screencapture -x /tmp/screen_wake.png || true
-          
-          echo "==> Apple VNC server active on port 5900 (User: vncuser, Password: $PASSWORD)"
+          echo "==> Installing cliclick and bore-cli..."
+          brew install cliclick bore-cli
 
       - name: Download and Mount Selected App(s)
         env:
@@ -136,63 +80,42 @@ jobs:
           xattr -cr "$DOWNLOAD_DIR" 2>/dev/null || true
           
           # Pre-launch target app
-          TARGET_APP=$(find /Volumes -maxdepth 3 -name "*.app" ! -path "*/Macintosh HD*" 2>/dev/null | head -n 1)
-          if [[ -n "$TARGET_APP" ]]; then
-            echo "==> Copying $TARGET_APP to /Applications..."
-            sudo cp -R "$TARGET_APP" /Applications/ || true
-            APP_NAME=$(basename "$TARGET_APP")
+          APP_PATH=$(find /Volumes -maxdepth 3 -name "*.app" ! -path "*/Macintosh HD*" 2>/dev/null | head -n 1)
+          if [[ -n "$APP_PATH" ]]; then
+            echo "==> Copying $APP_PATH to /Applications..."
+            sudo cp -R "$APP_PATH" /Applications/ || true
+            APP_NAME=$(basename "$APP_PATH")
             xattr -cr "/Applications/$APP_NAME" 2>/dev/null || true
             echo "==> Pre-launching /Applications/$APP_NAME on macOS display..."
-            open "/Applications/$APP_NAME" || open "$TARGET_APP" || true
+            open "/Applications/$APP_NAME" || true
           fi
 
-      - name: Start Direct TCP Tunnel and Web Client
+      - name: Start Live Web Remote Console
         run: |
-          echo "==> Installing bore-cli..."
-          brew install bore-cli
-          
-          echo "==> Setting up noVNC (HTML5 browser client)..."
-          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/noVNC
-          nohup /tmp/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6080 > /tmp/novnc.log 2>&1 &
+          chmod +x scripts/web_streamer.py
+          nohup python3 scripts/web_streamer.py > /tmp/streamer.log 2>&1 &
           sleep 2
           
-          echo "==> Starting bore tunnels for VNC (5900) and Web noVNC (6080)..."
-          nohup bore local 5900 --to bore.pub > /tmp/bore_vnc.log 2>&1 &
-          nohup bore local 6080 --to bore.pub > /tmp/bore_web.log 2>&1 &
-          sleep 5
+          nohup bore local 8080 --to bore.pub > /tmp/bore.log 2>&1 &
+          sleep 4
           
-          cat /tmp/bore_vnc.log
-          cat /tmp/bore_web.log
-          
-          BORE_VNC=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore_vnc.log | head -n 1 | awk '{print $NF}' || true)
-          BORE_WEB_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore_web.log | head -n 1 | awk -F: '{print $NF}' || true)
+          cat /tmp/bore.log
+          BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log | head -n 1 | awk -F: '{print $NF}' || true)
           
           echo " "
           echo "=========================================================================="
-          echo "             🖥️  macOS GRAPHICAL DESKTOP READY  🖥️                        "
+          echo "       🖥️  macOS INTERACTIVE LIVE CONSOLE READY  🖥️                     "
           echo "=========================================================================="
           echo " "
-          if [[ -n "$BORE_WEB_PORT" ]]; then
-            echo "  🌐 OPCIÓN A (¡1 Clic en tu NAVEGADOR WEB! Sin instalar nada):"
-            echo "     URL:        http://bore.pub:${BORE_WEB_PORT}/vnc.html"
-            echo "     Contraseña: ${{ inputs.vnc_password || 'yumedevs' }}"
+          if [[ -n "$BORE_PORT" ]]; then
+            echo "  👉 ENLACE DIRECTO (Abre en Chrome, Edge o tu navegador favorito):"
+            echo "     http://bore.pub:${BORE_PORT}"
             echo " "
+            echo "     ¡Haz clic en los botones de la app directamente desde tu navegador!"
           fi
-          if [[ -n "$BORE_VNC" ]]; then
-            echo "  👉 OPCIÓN B (Conexión Directa con TigerVNC Viewer):"
-            echo "     Servidor VNC: $BORE_VNC"
-            echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
-            echo "     (Tip: En F8 -> Options -> Compression, pon 'Auto' o 'Raw')"
-            echo " "
-          fi
-          echo "  👉 OPCIÓN C (Túnel SSH vía PowerShell):"
-          echo "     ssh -L 5900:127.0.0.1:5900 <pega_el_usuario_de_tmate_abajo>"
-          echo "     Servidor VNC: localhost:5900"
-          echo "     Contraseña:   ${{ inputs.vnc_password || 'yumedevs' }}"
-          echo " "
           echo "=========================================================================="
 
-      - name: Start Tmate Tunnel (Keeps Mac session alive up to 6 hours)
+      - name: Keep Runner Alive
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: false
