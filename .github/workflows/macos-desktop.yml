@@ -46,9 +46,18 @@ jobs:
           echo "==> Configuring Apple Screen Sharing / VNC on macOS..."
           sudo dscl . -passwd /Users/runner "$PASSWORD" 2>/dev/null || true
           
+          # Enable Screen Sharing launchd hook
+          echo -n enabled | sudo tee /Library/Preferences/com.apple.ScreenSharing.launchd > /dev/null
+          
+          # Write exact legacy VNC password hash for TigerVNC/RealVNC
+          # Computed via Apple's XOR obfuscation key for password "yumedevs":
+          echo "6E413C0BEFCDB391FF1C39567390ADCA" | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
+          sudo chmod 644 /Library/Preferences/com.apple.VNCSettings.txt
+          sudo chown root:wheel /Library/Preferences/com.apple.VNCSettings.txt
+          
+          # Configure Remote Management / VNC agent
           sudo $KICKSTART -configure -allowAccessFor -allUsers -privs -all
           sudo $KICKSTART -configure -clientopts -setvnclegacy -vnclegacy yes
-          sudo $KICKSTART -configure -clientopts -setvncpw -vncpw "$PASSWORD"
           sudo $KICKSTART -activate
           sudo $KICKSTART -configure -access -on
           sudo $KICKSTART -restart -agent -console
