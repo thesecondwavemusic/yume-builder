@@ -111,13 +111,15 @@ HTML_PAGE = """<!DOCTYPE html>
       <input type="text" id="type-input" placeholder="Escribe texto y pulsa Enviar..." onkeydown="if(event.key==='Enter') sendType()">
       <button onclick="sendType()">⌨️ Escribir</button>
       <button class="secondary" onclick="sendKey('Return')">↵ Enter</button>
+      <button class="secondary" onclick="sendKey('Backspace')">⌫ Borrar</button>
+      <button class="secondary" onclick="sendKey('Escape')">Esc</button>
       <button class="secondary" onclick="sendKey('Space')">Espacio</button>
       <button class="secondary" onclick="forceRefresh()">🔄 Refrescar</button>
     </div>
   </header>
 
   <div id="viewport-container">
-    <img id="screen" src="/screen.jpg" alt="macOS Screen" onclick="handleClick(event)">
+    <img id="screen" src="/screen.jpg" alt="macOS Screen" onclick="handleClick(event)" ondblclick="handleDoubleClick(event)" oncontextmenu="handleRightClick(event); return false;">
   </div>
 
   <script>
@@ -143,16 +145,37 @@ HTML_PAGE = """<!DOCTYPE html>
     // Auto-refresh every 1.2 seconds for fluid interactivity
     setInterval(refreshScreen, 1200);
 
-    function handleClick(e) {
+    function getCoords(e) {
       const rect = img.getBoundingClientRect();
       const scaleX = img.naturalWidth / rect.width;
       const scaleY = img.naturalHeight / rect.height;
-      const x = Math.round((e.clientX - rect.left) * scaleX);
-      const y = Math.round((e.clientY - rect.top) * scaleY);
+      return {
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY)
+      };
+    }
 
+    function handleClick(e) {
+      const { x, y } = getCoords(e);
       status.textContent = 'Clic en (' + x + ', ' + y + ')...';
-      fetch('/click?x=' + x + '&y=' + y)
+      fetch('/click?mode=click&x=' + x + '&y=' + y)
         .then(() => setTimeout(refreshScreen, 400));
+    }
+
+    function handleDoubleClick(e) {
+      const { x, y } = getCoords(e);
+      status.textContent = 'Doble clic en (' + x + ', ' + y + ')...';
+      fetch('/click?mode=double&x=' + x + '&y=' + y)
+        .then(() => setTimeout(refreshScreen, 400));
+    }
+
+    function handleRightClick(e) {
+      e.preventDefault();
+      const { x, y } = getCoords(e);
+      status.textContent = 'Clic derecho en (' + x + ', ' + y + ')...';
+      fetch('/click?mode=right&x=' + x + '&y=' + y)
+        .then(() => setTimeout(refreshScreen, 400));
+      return false;
     }
 
     function sendType() {
@@ -207,7 +230,13 @@ class LiveHandler(http.server.BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             x = qs.get('x', ['0'])[0]
             y = qs.get('y', ['0'])[0]
-            subprocess.run(['cliclick', f'c:{x},{y}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            mode = qs.get('mode', ['click'])[0]
+            cmd = 'c'
+            if mode == 'double':
+                cmd = 'dc'
+            elif mode == 'right':
+                cmd = 'rc'
+            subprocess.run(['cliclick', f'{cmd}:{x},{y}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
@@ -224,10 +253,17 @@ class LiveHandler(http.server.BaseHTTPRequestHandler):
         elif parsed.path == '/keypress':
             qs = urllib.parse.parse_qs(parsed.query)
             key = qs.get('key', ['Return'])[0]
-            if key == 'Return':
-                subprocess.run(['osascript', '-e', 'tell application "System Events" to key code 36'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif key == 'Space':
-                subprocess.run(['osascript', '-e', 'tell application "System Events" to key code 49'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            key_codes = {
+                'Return': 36,
+                'Space': 49,
+                'Backspace': 51,
+                'Escape': 53,
+                'Tab': 48,
+                'Up': 126,
+                'Down': 125,
+            }
+            code = key_codes.get(key, 36)
+            subprocess.run(['osascript', '-e', f'tell application "System Events" to key code {code}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()

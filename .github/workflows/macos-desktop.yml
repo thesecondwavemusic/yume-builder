@@ -79,15 +79,31 @@ jobs:
           # Remove quarantine attributes to prevent any Gatekeeper dialogs
           xattr -cr "$DOWNLOAD_DIR" 2>/dev/null || true
           
-          # Pre-launch target app
-          APP_PATH=$(find /Volumes -maxdepth 3 -name "*.app" ! -path "*/Macintosh HD*" 2>/dev/null | head -n 1)
-          if [[ -n "$APP_PATH" ]]; then
-            echo "==> Copying $APP_PATH to /Applications..."
-            sudo cp -R "$APP_PATH" /Applications/ || true
-            APP_NAME=$(basename "$APP_PATH")
-            xattr -cr "/Applications/$APP_NAME" 2>/dev/null || true
-            echo "==> Pre-launching /Applications/$APP_NAME on macOS display..."
-            open "/Applications/$APP_NAME" || true
+          # Copy all mounted apps into /Applications
+          find /Volumes -maxdepth 3 -name "*.app" ! -path "*/Macintosh HD*" 2>/dev/null | while read -r app_path; do
+            echo "==> Copying $app_path to /Applications..."
+            sudo cp -R "$app_path" /Applications/ || true
+            app_name=$(basename "$app_path")
+            xattr -cr "/Applications/$app_name" 2>/dev/null || true
+          done
+
+          # Determine target app to pre-launch on macOS display
+          TARGET_APP="$APP"
+          if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "central" ]]; then
+            TARGET_APP="Central"
+          fi
+
+          LAUNCH_PATH=$(find /Applications -maxdepth 1 -iname "*$TARGET_APP*.app" 2>/dev/null | head -n 1)
+          if [[ -z "$LAUNCH_PATH" && "$TARGET_APP" == "Central" ]]; then
+            LAUNCH_PATH=$(find /Applications -maxdepth 1 -iname "*Launcher*.app" 2>/dev/null | head -n 1)
+          fi
+          if [[ -z "$LAUNCH_PATH" ]]; then
+            LAUNCH_PATH=$(find /Applications -maxdepth 1 -name "*.app" ! -name "Safari.app" ! -name "System Preferences.app" ! -name "App Store.app" 2>/dev/null | head -n 1)
+          fi
+
+          if [[ -n "$LAUNCH_PATH" ]]; then
+            echo "==> Pre-launching $LAUNCH_PATH on macOS display..."
+            open "$LAUNCH_PATH" || true
           fi
 
       - name: Start Live Web Remote Console
