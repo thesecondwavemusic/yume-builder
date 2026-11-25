@@ -1,0 +1,42 @@
+name: Test macOS GUI Screenshot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-gui:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Builder
+        uses: actions/checkout@v4
+
+      - name: Download Central DMG and Capture Window
+        env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+        run: |
+          echo "==> Downloading Central DMG..."
+          REL_JSON=$(curl -s -f -H "Authorization: token $FORGE_TOKEN" "https://code.yumedevs.com/api/v1/repos/Alejandro/central/releases/latest")
+          DMG_URL=$(python3 -c "import sys, json; data=json.loads(sys.stdin.read()); print(next((x['browser_download_url'] for x in data.get('assets',[]) if x['name'].endswith('.dmg')), ''))" <<< "$REL_JSON")
+          
+          curl -s -f -H "Authorization: token $FORGE_TOKEN" "$DMG_URL" -o /tmp/central.dmg
+          hdiutil attach /tmp/central.dmg
+          
+          sudo cp -R /Volumes/Central*/Central.app /Applications/
+          xattr -cr /Applications/Central.app || true
+          
+          echo "==> Launching Central.app..."
+          open /Applications/Central.app
+          sleep 6
+          
+          echo "==> Taking screenshot with screencapture..."
+          screencapture -x /tmp/central_desktop.png
+          
+          echo "==> Inspecting captured image..."
+          sips -g pixelWidth -g pixelHeight /tmp/central_desktop.png
+          ls -lh /tmp/central_desktop.png
+
+      - name: Upload Screenshot Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-screenshot
+          path: /tmp/central_desktop.png
