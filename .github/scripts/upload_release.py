@@ -111,14 +111,14 @@ def upload_file(filename, filepath):
 
     print(f"[+] Uploading '{filename}'...")
     up_cmd = [
-        "curl", "-s", "-X", "POST",
+        "curl", "-s", "--fail-with-body", "-X", "POST",
         "-H", f"Authorization: token {token}",
         "-F", f"attachment=@{filepath}",
         f"{base_url}/repos/{repo_path}/releases/{release_id}/assets?name={filename}"
     ]
     res = subprocess.run(up_cmd, capture_output=True, text=True)
     if res.returncode != 0:
-        print(f"Error uploading {filename}: {res.stderr}")
+        print(f"Error uploading {filename} (exit {res.returncode}):\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
         sys.exit(1)
     print(f"[OK] Successfully uploaded '{filename}'")
 
