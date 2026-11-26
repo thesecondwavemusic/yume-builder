@@ -42,16 +42,16 @@ release_id = release_info["id"]
 existing_assets = {a["name"]: a for a in release_info.get("assets", [])}
 print(f"[*] Found release ID {release_id} with {len(existing_assets)} existing assets")
 
-# 2. Collect files to upload from dist/release (.msi, .exe, .zip)
+# 2. Collect files to upload from dist/release (.msi, .exe; omit portable .zip)
 files_to_hash = {}
 if os.path.isdir(dist_dir):
     for f in os.listdir(dist_dir):
-        if f.endswith(".msi") or f.endswith(".zip") or f.endswith(".exe"):
+        if f.endswith(".msi") or f.endswith(".exe"):
             if f != "SHA256SUMS.txt":
                 files_to_hash[f] = os.path.join(dist_dir, f)
 
 if not files_to_hash:
-    print("Error: No .msi or .zip artifacts found to upload!")
+    print("Error: No .msi or .exe artifacts found to upload!")
     sys.exit(1)
 
 new_hashes = {}
