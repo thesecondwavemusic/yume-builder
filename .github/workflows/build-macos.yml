@@ -22,15 +22,16 @@ on:
           - 'folio'
           - 'editorial'
           - 'sonic'
+          - 'all-apps'
           - 'all'
       arch:
         description: 'Target Architecture'
         required: true
         type: choice
-        default: 'aarch64'
+        default: 'universal'
         options:
-          - 'aarch64'
           - 'universal'
+          - 'aarch64'
           - 'x86_64'
       tag:
         description: 'Release Tag (optional, e.g. v0.24.1; autodetects from Cargo.toml if blank)'
@@ -40,54 +41,28 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
-    timeout-minutes: 90
-    env:
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
-        app: ${{ inputs.app == 'all' && fromJSON('["central","prism","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial","sonic","curve"]') || fromJSON(format('["{0}"]', inputs.app)) }}
+        app: ${{ inputs.app == 'all' && fromJSON('["curve","central","prism","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial","sonic"]') || (inputs.app == 'all-apps' && fromJSON('["prism","curve","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial"]') || fromJSON(format('["{0}"]', inputs.app))) }}
 
     steps:
-      - name: Checkout Builder
-        uses: actions/checkout@v4
-
-      - name: Set up Rust Toolchain
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.arch == 'universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || (inputs.arch == 'aarch64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin') }}
 
-      - name: Add Target Architectures
-        run: |
-          if [[ "${{ inputs.arch }}" == "universal" ]]; then
-            rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          elif [[ "${{ inputs.arch }}" == "aarch64" ]]; then
-            rustup target add aarch64-apple-darwin
-          else
-            rustup target add x86_64-apple-darwin
-          fi
-
-      - name: Clone from Private Forge (Ephemeral Storage)
+      - name: Clone from Private Forge (Ephemeral Memory)
         env:
           FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
           APP: ${{ matrix.app }}
         run: |
-          echo "==> Cloning $APP from private forge into ephemeral runner storage..."
+          echo "==> Cloning $APP from private forge into runner storage..."
           CLONE_DIR="$RUNNER_TEMP/$APP"
           rm -rf "$CLONE_DIR"
           git clone --depth 1 "https://oauth2:${FORGE_TOKEN}@code.yumedevs.com/Alejandro/${APP}.git" "$CLONE_DIR"
           echo "APP_DIR=$CLONE_DIR" >> "$GITHUB_ENV"
-
-      - name: Cache Cargo Dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-${{ matrix.app }}-${{ hashFiles(format('{0}/{1}/Cargo.lock', runner.temp, matrix.app)) }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.app }}-
-            ${{ runner.os }}-cargo-
 
       - name: Build and Package macOS Bundle (.app and .dmg)
         env:
@@ -99,7 +74,7 @@ jobs:
           
           # Read version from Cargo.toml (strip CR for CRLF safety)
           VERSION=$(tr -d '\r' < Cargo.toml | awk '
-            /^\[/ { in_pkg = ($0 == "[workspace.package]" || $0 == "[package]") ; next }
+            /^\[/ { in_pkg = ($0 == "[workspace.package]") ; next }
             in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }
           ')
           
@@ -114,132 +89,167 @@ jobs:
           chmod +x packaging/macos/package.sh
           ./packaging/macos/package.sh --arch "$ARCH"
           
-          # Ensure canonical names exist
+          # Ensure canonical DMG name exists
           DIST="dist/release"
           mkdir -p "$DIST"
           CANONICAL_DMG="$DIST/${APP}-${VERSION}-macos-${ARCH}.dmg"
           
           BUILT_DMG=$(find "$DIST" -maxdepth 1 -name "*.dmg" | head -n 1)
           if [[ -n "$BUILT_DMG" && "$BUILT_DMG" != "$CANONICAL_DMG" ]]; then
-            echo "==> Renaming $BUILT_DMG to $CANONICAL_DMG"
-            mv "$BUILT_DMG" "$CANONICAL_DMG"
-          fi
-
-          CANONICAL_CLI="$DIST/${APP}-cli-${VERSION}-macos-${ARCH}.zip"
-          BUILT_CLI=$(find "$DIST" -maxdepth 1 -name "*cli*.zip" | head -n 1)
-          if [[ -n "$BUILT_CLI" && "$BUILT_CLI" != "$CANONICAL_CLI" ]]; then
-            echo "==> Renaming $BUILT_CLI to $CANONICAL_CLI"
-            mv "$BUILT_CLI" "$CANONICAL_CLI"
+            echo "==> Aliasing $BUILT_DMG to $CANONICAL_DMG"
+            cp "$BUILT_DMG" "$CANONICAL_DMG"
           fi
           
           ls -lh "$DIST"
 
-      - name: Update Checksums and Upload to Gitea Release
+      - name: Upload Artifacts to Gitea Release & Update Checksums
         env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
           APP: ${{ matrix.app }}
           ARCH: ${{ inputs.arch }}
           TAG_INPUT: ${{ inputs.tag }}
-          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
         run: |
           cd "$APP_DIR"
-          TAG="${TAG_INPUT:-v$VERSION}"
-          echo "==> Publishing assets for $APP tag $TAG via Gitea REST API"
           
           python3 - << 'EOF'
-          import os, sys, json, urllib.request, hashlib, subprocess
+          import os
+          import sys
+          import json
+          import hashlib
+          import subprocess
+          import urllib.request
+          import urllib.error
 
-          token = os.environ["FORGE_TOKEN"]
           app = os.environ["APP"]
-          tag = os.environ.get("TAG_INPUT") or f"v{os.environ['VERSION']}"
-          app_dir = os.environ["APP_DIR"]
-          dist_dir = os.path.join(app_dir, "dist", "release")
-
-          # 1. Fetch release details from Gitea REST API via curl
-          rel_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/tags/{tag}"
-          try:
-              out = subprocess.check_output([
-                  "curl", "-s", "-f", "-H", f"Authorization: token {token}", rel_url
-              ])
-              rel_data = json.loads(out.decode())
-          except Exception as e:
-              print(f"[*] Release {tag} not found, creating it...")
-              create_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases"
-              payload = json.dumps({
-                  "tag_name": tag,
-                  "name": f"Yume {app.capitalize()} {tag}",
-                  "body": f"Yume {app.capitalize()} {tag} release artifacts"
-              })
-              out = subprocess.check_output([
-                  "curl", "-s", "-f", "-X", "POST",
-                  "-H", f"Authorization: token {token}",
-                  "-H", "Content-Type: application/json",
-                  "-d", payload, create_url
-              ])
-              rel_data = json.loads(out.decode())
-
-          rel_id = rel_data["id"]
-          existing_assets = {a["name"]: a["id"] for a in rel_data.get("assets", [])}
-          print(f"Found release {tag} (ID {rel_id}) with {len(existing_assets)} existing assets.")
-
-          # 2. Merge existing SHA256SUMS.txt with newly built artifacts
-          existing_sums = ""
-          if "SHA256SUMS.txt" in existing_assets:
-              try:
-                  sums_url = f"https://code.yumedevs.com/Alejandro/{app}/releases/download/{tag}/SHA256SUMS.txt"
-                  out_sums = subprocess.check_output([
-                      "curl", "-s", "-H", f"Authorization: token {token}", sums_url
-                  ])
-                  existing_sums = out_sums.decode("utf-8", errors="ignore")
-              except Exception as e:
-                  print("Could not fetch remote SHA256SUMS.txt:", e)
-
-          all_sums = {}
-          for line in existing_sums.splitlines():
-              parts = line.strip().split(None, 1)
-              if len(parts) == 2 and len(parts[0]) == 64:
-                  all_sums[parts[1].lstrip("*")] = parts[0]
-
-          for f in sorted(os.listdir(dist_dir)):
-              if f.endswith(".dmg") or f.endswith(".zip"):
-                  p = os.path.join(dist_dir, f)
-                  h = hashlib.sha256()
-                  with open(p, "rb") as bf:
-                      while chunk := bf.read(65536):
-                          h.update(chunk)
-                  all_sums[f] = h.hexdigest()
-
-          sums_path = os.path.join(dist_dir, "SHA256SUMS.txt")
-          with open(sums_path, "wb") as sf:
-              for fname in sorted(all_sums.keys()):
-                  sf.write(f"{all_sums[fname]}  {fname}\n".encode("ascii"))
-
-          print("Generated clean SHA256SUMS.txt:")
-          with open(sums_path, "r") as sf:
-              print(sf.read())
-
-          # 3. Upload built assets and updated SHA256SUMS.txt
-          files_to_upload = sorted([f for f in os.listdir(dist_dir) if f.endswith(".dmg") or f.endswith(".zip")])
-          if os.path.exists(sums_path) and "SHA256SUMS.txt" not in files_to_upload:
-              files_to_upload.append("SHA256SUMS.txt")
+          version = os.environ["VERSION"]
+          arch = os.environ["ARCH"]
+          tag = os.environ.get("TAG_INPUT") or f"v{version}"
+          token = os.environ["FORGE_TOKEN"]
           
-          for f in files_to_upload:
-              fpath = os.path.join(dist_dir, f)
-              if f in existing_assets:
-                  aid = existing_assets[f]
-                  print(f"[-] Deleting existing asset {f} (ID {aid})...")
-                  del_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/{rel_id}/assets/{aid}"
-                  subprocess.run(["curl", "-s", "-X", "DELETE", "-H", f"Authorization: token {token}", del_url], check=True)
-
-              print(f"[+] Uploading {f}...")
-              up_url = f"https://code.yumedevs.com/api/v1/repos/Alejandro/{app}/releases/{rel_id}/assets"
-              res = subprocess.run(
-                  ["curl", "-S", "-s", "-X", "POST", "-H", f"Authorization: token {token}", "-F", f"attachment=@{fpath}", up_url],
-                  capture_output=True, text=True
-              )
-              if res.returncode != 0 or ("id" not in res.stdout and "browser_download_url" not in res.stdout):
-                  print(f"Error uploading {f} (exit {res.returncode}):\nSTDERR: {res.stderr}\nSTDOUT: {res.stdout}", file=sys.stderr)
+          base_url = "https://code.yumedevs.com/api/v1"
+          repo_path = f"Alejandro/{app}"
+          dist_dir = os.path.join(os.environ["APP_DIR"], "dist", "release")
+          
+          print(f"[*] Processing release for {repo_path} at tag {tag}")
+          
+          # 1. Fetch release info
+          req = urllib.request.Request(
+              f"{base_url}/repos/{repo_path}/releases/tags/{tag}",
+              headers={"Authorization": f"token {token}", "User-Agent": "Yume-Mac-Builder"}
+          )
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  release_info = json.loads(resp.read().decode("utf-8"))
+          except urllib.error.HTTPError as e:
+              print(f"Error: Release {tag} not found on {repo_path} ({e})")
+              sys.exit(1)
+              
+          release_id = release_info["id"]
+          existing_assets = {a["name"]: a for a in release_info.get("assets", [])}
+          print(f"[*] Found release ID {release_id} with {len(existing_assets)} existing assets")
+          
+          # 2. Collect files to upload from dist/release
+          dmg_name = f"{app}-{version}-macos-{arch}.dmg"
+          dmg_path = os.path.join(dist_dir, dmg_name)
+          
+          files_to_hash = {}
+          if os.path.isfile(dmg_path):
+              files_to_hash[dmg_name] = dmg_path
+          else:
+              # Fallback to any DMG found
+              for f in os.listdir(dist_dir):
+                  if f.endswith(".dmg"):
+                      files_to_hash[f] = os.path.join(dist_dir, f)
+                      
+          # Check for CLI zip
+          for f in os.listdir(dist_dir):
+              if f.endswith(".zip") and "-cli-" in f:
+                  files_to_hash[f] = os.path.join(dist_dir, f)
+                  
+          if not files_to_hash:
+              print("Error: No .dmg or .zip artifacts found to upload!")
+              sys.exit(1)
+              
+          new_hashes = {}
+          for fname, fpath in files_to_hash.items():
+              h = hashlib.sha256()
+              with open(fpath, "rb") as bf:
+                  while chunk := bf.read(65536):
+                      h.update(chunk)
+              digest = h.hexdigest()
+              new_hashes[fname] = digest
+              print(f"[+] Computed SHA-256 for {fname}: {digest}")
+              
+          # 3. Read and merge existing SHA256SUMS.txt
+          all_sums = {}
+          if "SHA256SUMS.txt" in existing_assets:
+              sums_url = existing_assets["SHA256SUMS.txt"]["browser_download_url"]
+              try:
+                  with urllib.request.urlopen(sums_url) as resp:
+                      content = resp.read().decode("utf-8-sig", errors="replace")
+                      for line in content.splitlines():
+                          parts = line.strip().split(None, 1)
+                          if len(parts) == 2 and len(parts[0]) == 64:
+                              clean_name = parts[1].lstrip("*")
+                              all_sums[clean_name] = parts[0]
+                      print(f"[*] Loaded {len(all_sums)} existing checksums from release")
+              except Exception as e:
+                  print(f"[!] Warning reading existing SHA256SUMS.txt: {e}")
+                  
+          # Merge new hashes
+          for fname, digest in new_hashes.items():
+              all_sums[fname] = digest
+              
+          # Write merged SHA256SUMS.txt (pure ASCII, NO BOM, LF only)
+          sums_file_path = os.path.join(dist_dir, "SHA256SUMS.txt")
+          with open(sums_file_path, "wb") as sf:
+              for fname in sorted(all_sums.keys()):
+                  line = f"{all_sums[fname]}  {fname}\n"
+                  sf.write(line.encode("ascii"))
+          print(f"[*] Generated clean SHA256SUMS.txt with {len(all_sums)} total entries")
+          
+          # 4. Upload helper using curl
+          def upload_file(filename, filepath):
+              # Delete existing asset if it exists
+              if filename in existing_assets:
+                  asset_id = existing_assets[filename]["id"]
+                  print(f"[-] Deleting previous asset '{filename}' (ID: {asset_id})...")
+                  del_cmd = [
+                      "curl", "-s", "-X", "DELETE",
+                      "-H", f"Authorization: token {token}",
+                      f"{base_url}/repos/{repo_path}/releases/{release_id}/assets/{asset_id}"
+                  ]
+                  subprocess.run(del_cmd, check=True)
+                  
+              print(f"[+] Uploading '{filename}'...")
+              up_cmd = [
+                  "curl", "-s", "--fail-with-body", "-X", "POST",
+                  "-H", f"Authorization: token {token}",
+                  "-F", f"attachment=@{filepath}",
+                  f"{base_url}/repos/{repo_path}/releases/{release_id}/assets?name={filename}"
+              ]
+              res = subprocess.run(up_cmd, capture_output=True, text=True)
+              if res.returncode != 0:
+                  print(f"Error uploading {filename} (exit {res.returncode}):\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
                   sys.exit(1)
-              print(f"[✓] Successfully uploaded {f}!")
-
-          print("[✓] All release assets successfully published to Gitea!")
+              print(f"[✓] Successfully uploaded '{filename}'")
+              
+          # Upload DMGs and zips
+          for fname, fpath in files_to_hash.items():
+              upload_file(fname, fpath)
+              
+          # Upload updated SHA256SUMS.txt
+          upload_file("SHA256SUMS.txt", sums_file_path)
+          print("[✓] All release assets updated successfully!")
           EOF
+
+      - name: Fallback Upload to GitHub Artifacts (if Forge upload fails)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.app }}-${{ inputs.arch }}
+          path: |
+            ${{ env.APP_DIR }}/dist/release/*.dmg
+            ${{ env.APP_DIR }}/dist/release/SHA256SUMS.txt
+          retention-days: 3
+          if-no-files-found: ignore

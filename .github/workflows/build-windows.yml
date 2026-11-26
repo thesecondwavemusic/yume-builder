@@ -22,6 +22,7 @@ on:
           - 'folio'
           - 'editorial'
           - 'sonic'
+          - 'all-apps'
           - 'all'
       arch:
         description: 'Target Architecture'
@@ -44,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: ${{ inputs.app == 'all' && fromJSON('["central","prism","curve","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial","sonic"]') || fromJSON(format('["{0}"]', inputs.app)) }}
+        app: ${{ inputs.app == 'all' && fromJSON('["central","prism","curve","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial","sonic"]') || (inputs.app == 'all-apps' && fromJSON('["prism","curve","frame","reel","surface","forge","anima","kinetic","lux","folio","editorial"]') || fromJSON(format('["{0}"]', inputs.app))) }}
 
     steps:
       - name: Checkout Workflow Repository
@@ -110,18 +111,9 @@ jobs:
               'arm64' { 'aarch64-pc-windows-msvc' }
             }
             cargo build --release --locked --target $target
-            
-            $binName = "$env:APP.exe"
-            $binPath = "target\$target\release\$binName"
-            if (Test-Path $binPath) {
-              $portableDir = "target\windows-package\$env:APP-$version-windows-$env:ARCH-portable"
-              New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
-              Copy-Item $binPath $portableDir
-              Compress-Archive -Path $portableDir -DestinationPath "$distDir\$env:APP-$version-windows-$env:ARCH-portable.zip" -Force
-            }
           }
           
-          # Create canonical aliases for Yume Suite
+          # Create canonical aliases for Yume Suite (MSI only; omit portable ZIPs and legacy names)
           if (Test-Path $distDir) {
             $msiFiles = Get-ChildItem -Path $distDir -Filter "*.msi"
             foreach ($msi in $msiFiles) {
@@ -133,22 +125,11 @@ jobs:
               Copy-Item $msi.FullName $yumeMsi -Force
               Write-Host "==> Created canonical MSI: $canonicalMsi"
             }
-            
-            $zipFiles = Get-ChildItem -Path $distDir -Filter "*.zip"
-            foreach ($zip in $zipFiles) {
-              if ($zip.Name -like "*-symbols.zip" -or $zip.Name -like "*-pdb.zip") { continue }
-              $canonicalZip = Join-Path $distDir "$env:APP-$version-windows-$env:ARCH-portable.zip"
-              if ($zip.FullName -ne $canonicalZip) {
-                Copy-Item $zip.FullName $canonicalZip -Force
-              }
-              Write-Host "==> Created canonical ZIP: $canonicalZip"
-            }
 
-            # Remove legacy-named installers/zips so only official Yume names are uploaded
+            # Remove all ZIPs (portable/legacy) and legacy-named MSIs so only official Yume MSIs remain
             Get-ChildItem -Path $distDir -File | Where-Object {
-              ($_.Extension -eq '.msi' -or $_.Extension -eq '.zip') -and
-              ($_.Name -notlike "$env:APP-*") -and
-              ($_.Name -notlike "yume-$env:APP-*")
+              ($_.Extension -eq '.zip') -or
+              ($_.Extension -eq '.msi' -and ($_.Name -notlike "$env:APP-*") -and ($_.Name -notlike "yume-$env:APP-*"))
             } | Remove-Item -Force
           }
           
@@ -163,3 +144,14 @@ jobs:
           TAG_INPUT: ${{ inputs.tag }}
         run: |
           python "$env:GITHUB_WORKSPACE/.github/scripts/upload_release.py"
+
+      - name: Fallback Upload to GitHub Artifacts (if Forge upload fails)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.app }}-${{ inputs.arch }}
+          path: |
+            ${{ env.APP_DIR }}/dist/release/*.msi
+            ${{ env.APP_DIR }}/dist/release/SHA256SUMS.txt
+          retention-days: 3
+          if-no-files-found: ignore
