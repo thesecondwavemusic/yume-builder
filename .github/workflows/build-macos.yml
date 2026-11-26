@@ -97,11 +97,11 @@ jobs:
         run: |
           cd "$APP_DIR"
           
-          # Read version from Cargo.toml
-          VERSION=$(awk '
+          # Read version from Cargo.toml (strip CR for CRLF safety)
+          VERSION=$(tr -d '\r' < Cargo.toml | awk '
             /^\[/ { in_pkg = ($0 == "[workspace.package]" || $0 == "[package]") ; next }
             in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }
-          ' Cargo.toml)
+          ')
           
           if [[ -z "$VERSION" ]]; then
             echo "Error: Could not determine version from Cargo.toml" >&2
