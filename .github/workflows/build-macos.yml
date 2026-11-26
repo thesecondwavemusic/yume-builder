@@ -185,7 +185,11 @@ jobs:
           if "SHA256SUMS.txt" in existing_assets:
               sums_url = existing_assets["SHA256SUMS.txt"]["browser_download_url"]
               try:
-                  with urllib.request.urlopen(sums_url) as resp:
+                  sums_req = urllib.request.Request(
+                      sums_url,
+                      headers={"Authorization": f"token {token}", "User-Agent": "Yume-Mac-Builder"}
+                  )
+                  with urllib.request.urlopen(sums_req) as resp:
                       content = resp.read().decode("utf-8-sig", errors="replace")
                       for line in content.splitlines():
                           parts = line.strip().split(None, 1)
