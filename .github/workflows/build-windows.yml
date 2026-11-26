@@ -136,12 +136,20 @@ jobs:
             
             $zipFiles = Get-ChildItem -Path $distDir -Filter "*.zip"
             foreach ($zip in $zipFiles) {
+              if ($zip.Name -like "*-symbols.zip" -or $zip.Name -like "*-pdb.zip") { continue }
               $canonicalZip = Join-Path $distDir "$env:APP-$version-windows-$env:ARCH-portable.zip"
               if ($zip.FullName -ne $canonicalZip) {
                 Copy-Item $zip.FullName $canonicalZip -Force
               }
               Write-Host "==> Created canonical ZIP: $canonicalZip"
             }
+
+            # Remove legacy-named installers/zips so only official Yume names are uploaded
+            Get-ChildItem -Path $distDir -File | Where-Object {
+              ($_.Extension -eq '.msi' -or $_.Extension -eq '.zip') -and
+              ($_.Name -notlike "$env:APP-*") -and
+              ($_.Name -notlike "yume-$env:APP-*")
+            } | Remove-Item -Force
           }
           
           Get-ChildItem -Path $distDir | Select-Object Name, Length
